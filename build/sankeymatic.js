@@ -384,12 +384,12 @@ glob.saveDiagramAsSVG = () => {
     // Add a title placeholder & credit comment after the FIRST tag:
     .replace(
       />/,
-      '>\r\n<title>Your Diagram Title</title>\r\n'
+      '>\r\n<title>Sankey Diagram</title>\r\n'
           + `<!-- Generated with SankeyMATIC: ${glob.humanTimestamp()} -->\r\n`
       )
     // Add some line breaks to highlight where [g]roups start/end
-    // and where each path/text/rect begins:
-    .replace(/><(g|\/g|path|text|rect)/g, '>\r\n<$1');
+    // and where each path/text/rect/gradient definition begins:
+    .replace(/><(g|\/g|path|text|rect|defs|linearGradient)/g, '>\r\n<$1');
   downloadATextFile(svgForExport, `sankeymatic_${glob.fileTimestamp()}.svg`);
 };
 
@@ -405,7 +405,16 @@ function flatFlowPathMaker(f) {
     syTop = f.source.y + f.sy,         // source flow top
     tyBot = f.target.y + f.ty + f.dy;  // target flow bottom
 
-  f.renderAs = 'flat'; // Render this path as a filled parallelogram
+  if (! f.gradientcolor && f.gradientcolor.length === 0) {
+    f.renderAs = 'flat'; // Render this path as a filled parallelogram
+  } else {
+    f.renderAs = 'flatgradient'; // Render this path as a gradient filled parallelogram
+  }
+
+  // TODO: if the source / target bars are manually dragged to flip them
+  // horizontally, then the line should go from source leading edge to target
+  // trailing edge; you can demonstrate this by dragging bars to create sharp angles
+
 
   // This SVG Path spec means:
   // [M]ove to the flow source's top; draw a [v]ertical line down,
@@ -419,15 +428,18 @@ L${ep(tx)} ${ep(tyBot)}v${ep(-f.dy)}z`;
 // Returns an SVG-path-producing /function/ based on the given curvature.
 // Used for the "d" attribute on a "path" element when curvature > 0.
 // Defers to flatFlowPathMaker() when the flow is basically horizontal.
-//
-// TODO: This function needs to know if the flow has a color gradient
-//       and if so must always render as a filled path, not a thick stroke
 function curvedFlowPathFunction(curvature) {
   return (f) => {
     const syC = f.source.y + f.sy + f.dy / 2, // source flow's y center
       tyC = f.target.y + f.ty + f.dy / 2,     // target flow's y center
-      sEnd = f.source.x + f.source.dx,  // source's trailing edge
-      tStart = f.target.x;              // target's leading edge
+      sEnd = f.source.x + f.source.dx,        // source's trailing edge
+      tStart = f.target.x,                    // target's leading edge
+                                        // - extra for gradient shapes
+      syT = f.source.y + f.sy,          // source flow's y top
+      syB = f.source.y + f.sy + f.dy,   // source flow's y bottom
+      tyT = f.target.y + f.ty,          // target flow's y top
+      tyB = f.target.y + f.ty + f.dy,   // target flow's y bottom
+      flH = f.dy;                       // target flow's height
 
     // Watch out for a nearly-straight path (total rise/fall < 2 pixels OR
     // very little horizontal space to work with).
@@ -437,22 +449,66 @@ function curvedFlowPathFunction(curvature) {
       return flatFlowPathMaker(f);
     }
 
-    f.renderAs = 'curved'; // Render this path as a curved stroke
 
-    // Make the curved path:
-    // Set up a function for interpolating between the two x values:
-    const xinterpolate = d3.interpolateNumber(sEnd, tStart),
-      // Pick 2 curve control points given the curvature & its converse:
-      xcp1 = xinterpolate(curvature),
-      xcp2 = xinterpolate(1 - curvature);
-    // This SVG Path spec means:
-    // [M]ove to the center of the flow's start [sx,syC]
-    // Draw a Bezier [C]urve using control points [xcp1,syC] & [xcp2,tyC]
-    // End at the center of the flow's target [tx,tyC]
-    return (
-      `M${ep(sEnd)} ${ep(syC)}C${ep(xcp1)} ${ep(syC)} \
-${ep(xcp2)} ${ep(tyC)} ${ep(tStart)} ${ep(tyC)}`
-    );
+
+
+    // If the flow is one color we use a single stroke from start to end,
+    // defined as a thick line.
+    if (! f.gradientcolor && f.gradientcolor.length === 0) {
+      f.renderAs = 'curved';
+
+      // Make the curved path:
+      // Set up a function for interpolating between the two x values:
+      const xinterpolate = d3.interpolateNumber(sEnd, tStart),
+        // Pick 2 curve control points given the curvature & its converse:
+        xcp1 = xinterpolate(curvature),
+        xcp2 = xinterpolate(1 - curvature);
+      // This SVG Path spec means:
+      // [M]ove to the center of the flow's start [sx,syC]
+      // Draw a Bezier [C]urve using control points [xcp1,syC] & [xcp2,tyC]
+      // End at the center of the flow's target [tx,tyC]
+      return (
+        `M${ep(sEnd)} ${ep(syC)}C${ep(xcp1)} ${ep(syC)} \
+  ${ep(xcp2)} ${ep(tyC)} ${ep(tStart)} ${ep(tyC)}`
+      );
+    }
+    // If the flow is a gradient color then we need to construct a
+    // less pretty, but filled shape with a bezier curve top and bottom.
+    //
+    // NOTE: for high levels of curviness this starts to look very different
+    // to "curved" rendering above, by becoming of variable width
+    // e.g. see this https://stackoverflow.com/questions/79353825/2d-how-to-make-bezier-curve-line-has-width-by-using-python
+    // as a demonstration of the difference between a bezier curve of given width
+    // and the shape inside two bezier curves offset by that width.
+    //
+    // TODO: it's possible the d3 area.curve functions can already handle this.
+    //
+    else {
+      f.renderAs = 'curvedgradient';
+
+      // Make the curved path:
+      // Set up a function for interpolating between the two x values:
+      const xinterpolate = d3.interpolateNumber(sEnd, tStart),
+        // Pick 2 curve control points given the curvature & its converse:
+        xcp1 = xinterpolate(curvature),
+        xcp2 = xinterpolate(1 - curvature);
+      // This SVG Path spec means:
+      // [M]ove to the top flow's start [sx,syT]
+      // Draw a Bezier [C]urve using control points [xcp1,syT] & [xcp2,tyT]
+      // move [v]ertically (relative), the height of the flow (flH)
+      // Draw the same bezier in reverse (to end at bottom of flow's start bar)
+      // finally, [Z] closes the shape
+      return (
+        `M${ep(sEnd)} ${ep(syT)}\
+  C${ep(xcp1)} ${ep(syT)} ${ep(xcp2)} ${ep(tyT)} ${ep(tStart)} ${ep(tyT)}\
+  v${ep(flH)}\
+  C${ep(xcp2)} ${ep(tyB)} ${ep(xcp1)} ${ep(syB)} ${ep(sEnd)} ${ep(syB)}\
+  Z`
+      );
+    }
+
+
+
   };
 }
 
@@ -1258,9 +1314,6 @@ function render_sankey(allNodes, allFlows, cfg, numberStyle) {
     flowsAreFlat = (cfg.flow_curvature <= 0.1),
     // flowPathFn is a function producing an SVG path; the same function is
     // used for all Flows. (Flat flows use a simpler function.)
-    // 
-    // TODO xxx - expand this conditional for gradient flows which need
-    //            a different function
     flowPathFn = flowsAreFlat
       ? flatFlowPathMaker
       : curvedFlowPathFunction(cfg.flow_curvature),
@@ -1383,15 +1436,8 @@ function render_sankey(allNodes, allFlows, cfg, numberStyle) {
         }
       }
     }
-    // Set up alternative values to enable the current flow to be
-    // rendered as either flat or curved:
-    // 
-    // When a flow has a color gradient:
-    //  * If it's flat it's a parallelogram like below so needs a fill
-    //    with the gradient defined.  If it's curved we structure it as
-    //    a closed path that is also filled.
-    //    
-    // Otherwise ...
+    // Set up additional values to enable the flow to be rendered as
+    // either flat or curved, and solid or gradient filled.
     // 
     // When a flow is FLAT:
     //  * It's really a parallelogram, so it needs a 'fill' value.
@@ -1400,16 +1446,16 @@ function render_sankey(allNodes, allFlows, cfg, numberStyle) {
     // When a flow is CURVED:
     //  * No fill; only stroke-width!
     //  * stroke-width is set to at least 1px so tiny flows can be seen.
+    // When a flow has a GRADIENT:
+    //  * Use a fill of the gradient that's defined in a "defs" block
+    //  * Set stroke-width to zero since the stroke is not also gradiented
+    f.fill = { flat: f.color, curved: 'none',
+               flatgradient: "url('#gradient-" + f.dom_id + "')",
+               curvedgradient: "url('#gradient-" + f.dom_id + "')" };
 
-    if (f.gradientcolor) {
-      // TODO xxx FUTURE -- switch to this when gradient + curves work properly
-      // f.fill = "url('#gradient-" + f.dom_id + "')";
-      f.fill = { flat: "url('#gradient-" + f.dom_id + "')", curved: 'none' };
-    } else {
-      f.fill = { flat: f.color, curved: 'none' };
-    }
+    f.stroke_width = { flat: 0.5, curved: Math.max(1, f.dy),
+	               flatgradient: 0, curvedgradient: 0 };
 
-    f.stroke_width = { flat: 0.5, curved: Math.max(1, f.dy) };
   });
 
   // At this point, allNodes and allFlows are ready to go. Draw!
@@ -1495,27 +1541,25 @@ function render_sankey(allNodes, allFlows, cfg, numberStyle) {
   // If any of our flows have a gradient (see hasGradientFilter) we generate
   // linearGradient definitions for each one.  This will take effect on the
   // "source-target" flow inherited color, or (future) via manual definition.
-  const gradient = diagMain.append("defs")
+  const diagGradients = diagMain.append("defs")
       .attr("id", "source-target-gradients")
 	  .selectAll()
 	  .data(allFlows.filter(hasGradientFilter))
 	  .enter()
 	  .append("linearGradient")
           .attr("id", (f) => "gradient-" + f.dom_id)
-	  // TODO - some refs indicate using x0, x1 for start end position,
-	  // and to use the userSpaceOnUse but my testing shows nicer colours
-	  // without either
-          //.attr("gradientUnits", "userSpaceOnUse")
-	  
+	  // if bars are dragged to opposite sides of the canvas, we need to invert
+	  // the gradient; note there is no need for y co-ords for gradient line.
+	  .attr("x1", (f) => f.target.x > f.source.x ? "5%" : "95%")
+	  .attr("x2", (f) => f.target.x > f.source.x ? "95%" : "5%")
 	  // sort alphabetically
 	  .sort((a, b) => b.dom_id - a.dom_id);
 
-    // add first and second stop for each gradient definition.  (if the code is later
-    // changed to e.g. define gradients for all flows, we default stop color to start
-    // color for a solid color instead of being blank).
-    gradient.append("stop").attr("offset", "0%").attr("stop-color", (f) => f.color);
-    gradient.append("stop").attr("offset", "100%").attr("stop-color", (f) => f.gradientcolor || f.color);
 
+  // add first and second stop for each gradient definition.
+  // In the event that f.gradientcolor is not defined we default to f.color
+  diagGradients.append("stop").attr("offset", "0%").attr("stop-color", (f) => f.color);
+  diagGradients.append("stop").attr("offset", "100%").attr("stop-color", (f) => f.gradientcolor || f.color);
 
 
   // MARK Drag functions for Nodes
@@ -1590,6 +1634,12 @@ function render_sankey(allNodes, allFlows, cfg, numberStyle) {
       // so derive those attributes again:)
       .attr('fill', (f) => f.fill[f.renderAs])
       .attr('stroke-width', (f) => ep(f.stroke_width[f.renderAs]));
+
+    // For every gradient, flip it if the bars have been inverted
+    diagGradients
+	  .attr("x1", (f) => f.target.x > f.source.x ? "5%" : "95%")
+	  .attr("x2", (f) => f.target.x > f.source.x ? "95%" : "5%");
+
   }
 
   // Show helpful guides/content for the current drag. We put it all in a
@@ -2545,9 +2595,9 @@ ${escapeHTML(lineIn)}`
         opacity: '', // ""
       },
 
-      // TODO xxx TODO -- the new "color gradient" addition calls for this to be
+      // TODO -- the new "color gradient" addition calls for this to be
       // expanded to allow for flow.color and also flow.gradientcolor to be defined
-      // here.  I would imagine Name [#color[-#color][.opacity]] would work well.
+      // here.  I would imagine Name #[[color[-color]][.opacity]] would work well.
 
       // Try to parse any extra info that isn't actually the target's name.
       // The format of the Target string can be: "Name [#color[.opacity]]"
@@ -2867,7 +2917,6 @@ ${escapeHTML(ef.target.logName ?? ef.target.tipName)}${unknownMsg}`
     switch (approvedCfg.flow_inheritfrom) {
       case 'source': approvedCfg.flow_inheritfrom = 'target'; break;
       case 'target': approvedCfg.flow_inheritfrom = 'source'; break;
-      // TODO: we will need special handling for "target-source" instead of "source-target"
       // no default
     }
   }
