@@ -405,6 +405,11 @@ function flatFlowPathMaker(f) {
     syTop = f.source.y + f.sy,         // source flow top
     tyBot = f.target.y + f.ty + f.dy;  // target flow bottom
 
+  // TODO - we use a gradient if two colors exist, but do not care if they are
+  // the same.  Because the rendering is slightly different - for flat we have
+  // a stroked outline, for curved we have a different algorithm entirely - we
+  // keep it this way so the final result depends on whether a gradient is 
+  // intended, and not whether the actual gradient is visible or not.
   if (! f.gradientcolor && f.gradientcolor.length === 0) {
     f.renderAs = 'flat'; // Render this path as a filled parallelogram
   } else {
@@ -1541,6 +1546,10 @@ function render_sankey(allNodes, allFlows, cfg, numberStyle) {
   // If any of our flows have a gradient (see hasGradientFilter) we generate
   // linearGradient definitions for each one.  This will take effect on the
   // "source-target" flow inherited color, or (future) via manual definition.
+  // 
+  // NOTE: if there are no gradients we leave behind an empty "defs" block; 
+  // it does not cause a problem, but an optimisation would be to detect this
+  // and omit it if needed.
   const diagGradients = diagMain.append("defs")
       .attr("id", "source-target-gradients")
 	  .selectAll()
